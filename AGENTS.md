@@ -16,6 +16,10 @@ go build ./cmd/redev
 - Prefer small packages with explicit dependencies so future `devssh` package
   integration stays testable.
 - Do not persist credentials in remote files, shell profiles, command argv, or
-  logs. Credential forwarding must be explicit, scoped, redacted, and cleaned up.
+  logs. Credential forwarding must be scoped, redacted, and cleaned up.
+- `redev ssh` always forwards the active GitHub token. Keep forwarding safe by
+  setting `GH_TOKEN` only in the local `devpod ssh` child process and using
+  `--send-env GH_TOKEN`; avoid `--set-env` with token values because that puts
+  secrets in command argv.
 - Generate shell completions from the CLI source of truth; do not hand-maintain
   separate completion logic.

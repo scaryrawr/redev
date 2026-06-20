@@ -27,6 +27,12 @@ redev ssh <workspace> [-- ssh-args...]
 redev completion fish
 ```
 
+`redev ssh` reads the active `gh auth token` by default, sets it only on the
+local `devpod ssh` process as `GH_TOKEN`, and asks DevPod to forward that
+environment variable into the workspace. This lets GitHub CLI and Copilot CLI
+use the same GitHub account without writing the token to remote files or putting
+the token value in the `devpod` command line.
+
 ## Roadmap
 
 - Use shared `devssh` packages for ControlMaster lifecycle, forwarding,
