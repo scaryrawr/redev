@@ -44,6 +44,10 @@ No flags are required for the default devssh experience: port monitoring,
 user-local xdg-open shim setup, browser opening, notifications, and default
 reverse forwards are all enabled.
 
+When launched from Ghostty, `redev ssh` asks OpenSSH to set the remote `TERM` to
+`xterm-256color`. This avoids terminfo warnings in workspaces that do not yet
+ship Ghostty's `xterm-ghostty` entry.
+
 ## Roadmap
 
 - Add explicit, scoped GitHub credential forwarding through a short-lived broker

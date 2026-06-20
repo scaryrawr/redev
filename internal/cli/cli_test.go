@@ -83,6 +83,7 @@ func TestRunSSHUsesDevSSHWithDevpodProxy(t *testing.T) {
 		devpodSSHUser = originalDevpodSSHUser
 	})
 	t.Setenv("DEVSSH_CONFIG", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("TERM", "xterm-256color")
 
 	githubAuthToken = func(context.Context) (string, error) {
 		t.Fatal("token should be resolved by the ProxyCommand helper, not before devssh starts")
@@ -147,6 +148,41 @@ func TestRunSSHUsesDevSSHWithDevpodProxy(t *testing.T) {
 	}
 	if strings.Contains(proxyCommand, "secret-token") {
 		t.Fatalf("ProxyCommand leaked token: %q", proxyCommand)
+	}
+}
+
+func TestRunSSHUsesGhosttyTermFallback(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	originalRunDevSSH := runDevSSH
+	originalExecutablePath := executablePath
+	originalDevpodSSHUser := devpodSSHUser
+	t.Cleanup(func() {
+		runDevSSH = originalRunDevSSH
+		executablePath = originalExecutablePath
+		devpodSSHUser = originalDevpodSSHUser
+	})
+	t.Setenv("DEVSSH_CONFIG", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("TERM", "xterm-ghostty")
+
+	executablePath = func() (string, error) {
+		return "/tmp/redev", nil
+	}
+	devpodSSHUser = func(workspace string) (string, error) {
+		return "vscode", nil
+	}
+
+	var got devssh.Options
+	runDevSSH = func(ctx context.Context, opts devssh.Options) error {
+		got = opts
+		return nil
+	}
+
+	if err := Run(context.Background(), []string{"ssh", "my-workspace"}, &stdout, &stderr); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if !containsOptionPair(got.SSHOptions, "-o", "SetEnv=TERM=xterm-256color") {
+		t.Fatalf("SSHOptions = %#v, want Ghostty TERM fallback", got.SSHOptions)
 	}
 }
 
@@ -280,6 +316,15 @@ func TestDevpodStdioProxyReturnsTokenError(t *testing.T) {
 func containsArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsOptionPair(args []string, option, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == option && args[i+1] == value {
 			return true
 		}
 	}

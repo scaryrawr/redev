@@ -22,6 +22,12 @@ import (
 
 const version = "0.1.0-dev"
 
+const (
+	ghosttyTerm             = "xterm-ghostty"
+	ghosttySSHRemoteTerm    = "xterm-256color"
+	sshSetEnvOptionTemplate = "SetEnv=TERM=%s"
+)
+
 var (
 	runDevpodInteractiveWithEnv = devpod.RunInteractiveWithEnv
 	runDevSSH                   = devssh.Run
@@ -166,6 +172,7 @@ func runSSH(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ProxyCommand=" + devpodProxyCommand(executable, workspace, user),
 	}
+	opts.SSHOptions = append(opts.SSHOptions, terminalFallbackSSHOptions(os.Getenv("TERM"))...)
 	if user != "" {
 		opts.SSHOptions = append([]string{"-o", "User=" + user}, opts.SSHOptions...)
 	}
@@ -175,6 +182,15 @@ func runSSH(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	opts.ReversePortForwards = cfg.ReversePortForwardsForHostWithDefaults(workspace, devssh.DefaultReversePortForwards())
 
 	return runDevSSH(ctx, opts)
+}
+
+// terminalFallbackSSHOptions returns OpenSSH options that keep common terminal
+// applications usable when the remote does not have local terminal metadata.
+func terminalFallbackSSHOptions(term string) []string {
+	if term != ghosttyTerm {
+		return nil
+	}
+	return []string{"-o", fmt.Sprintf(sshSetEnvOptionTemplate, ghosttySSHRemoteTerm)}
 }
 
 func runDevpodStdioProxy(ctx context.Context, args []string, stdout, stderr io.Writer) error {
