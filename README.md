@@ -6,8 +6,8 @@ lifecycle commands with the richer SSH, port-forwarding, browser/OAuth, desktop
 notification, and credential-forwarding primitives being extracted from
 [`devssh`](https://github.com/scaryrawr/devssh).
 
-This repository starts with a small, working frontend around `devpod`; the
-deeper `devssh` integration will follow once those primitives are importable.
+`redev ssh` uses DevPod as the container transport and devssh for the interactive
+SSH lifecycle.
 
 ## Install from source
 
@@ -23,20 +23,29 @@ redev list
 redev list --json
 redev open <workspace>
 redev open --ide <name> <workspace>
-redev ssh <workspace> [-- ssh-args...]
+redev ssh [flags] <workspace> [-- ssh-args...]
 redev completion fish
 ```
 
-`redev ssh` reads the active `gh auth token` by default, sets it only on the
-local `devpod ssh` process as `GH_TOKEN`, and asks DevPod to forward that
-environment variable into the workspace. This lets GitHub CLI and Copilot CLI
-use the same GitHub account without writing the token to remote files or putting
-the token value in the `devpod` command line.
+`redev ssh` starts a devssh session through a DevPod `ssh --stdio` proxy. This
+provides devssh's ControlMaster-based lifecycle, automatic remote port
+monitoring, default reverse forwards for local services such as Ollama, LM
+Studio, and Chrome DevTools, browser opening, notifications, and helper cleanup.
+The DevPod stdio proxy runs with DevPod SSH services disabled so devssh owns
+port forwarding and the two layers do not attempt to manage the same forwards.
+
+The active `gh auth token` is still forwarded through DevPod without putting the
+token value in command argv, SSH config, logs, or remote files. redev's hidden
+ProxyCommand helper reads the token locally, sets it only on the local
+`devpod ssh --stdio` child process as `GH_TOKEN`, and asks DevPod to forward
+that environment variable into the workspace with `--send-env GH_TOKEN`.
+
+No flags are required for the default devssh experience: port monitoring,
+user-local xdg-open shim setup, browser opening, notifications, and default
+reverse forwards are all enabled.
 
 ## Roadmap
 
-- Use shared `devssh` packages for ControlMaster lifecycle, forwarding,
-  browser opening, notifications, and remote helper upload.
 - Add explicit, scoped GitHub credential forwarding through a short-lived broker
   instead of persistent remote environment files.
 - Add devpod-aware workspace discovery, setup validation, cleanup, and richer

@@ -3,6 +3,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,7 +13,10 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"unicode"
 
+	sshconfig "github.com/kevinburke/ssh_config"
+	devssh "github.com/scaryrawr/devssh"
 	"github.com/scaryrawr/redev/internal/devpod"
 )
 
@@ -19,7 +24,10 @@ const version = "0.1.0-dev"
 
 var (
 	runDevpodInteractiveWithEnv = devpod.RunInteractiveWithEnv
+	runDevSSH                   = devssh.Run
 	githubAuthToken             = currentGitHubAuthToken
+	executablePath              = os.Executable
+	devpodSSHUser               = devpodWorkspaceUser
 )
 
 // Run parses args and executes the requested command.
@@ -44,6 +52,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runOpen(ctx, args[1:], stdout, stderr)
 	case "ssh":
 		return runSSH(ctx, args[1:], stdout, stderr)
+	case "_devpod-stdio-proxy":
+		return runDevpodStdioProxy(ctx, args[1:], stdout, stderr)
 	case "completion":
 		return runCompletion(args[1:], stdout)
 	default:
@@ -129,18 +139,145 @@ func runSSH(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return fmt.Errorf("ssh requires a workspace")
 	}
 
-	devpodArgs := []string{"ssh"}
-	var env []string
+	workspace := fs.Arg(0)
+	remainingArgs := fs.Args()[1:]
+
+	cfg, err := devssh.LoadAppConfig()
+	if err != nil {
+		return fmt.Errorf("load devssh config: %w", err)
+	}
+
+	executable, err := executablePath()
+	if err != nil {
+		return fmt.Errorf("resolve redev executable: %w", err)
+	}
+	user, err := devpodSSHUser(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve DevPod ssh user: %w", err)
+	}
+
+	host := devpodHostAlias(workspace)
+	opts := devssh.DefaultOptions(host)
+	opts.Stdin = os.Stdin
+	opts.Stdout = stdout
+	opts.Stderr = stderr
+	opts.SSHOptions = []string{
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=" + devpodProxyCommand(executable, workspace, user),
+	}
+	if user != "" {
+		opts.SSHOptions = append([]string{"-o", "User=" + user}, opts.SSHOptions...)
+	}
+	opts.SSHArgs = stripLeadingDashDash(remainingArgs)
+	opts.InstallXdgOpen = cfg.InstallXdgOpenForHost(workspace)
+	opts.DisableDefaultReversePortForwards = true
+	opts.ReversePortForwards = cfg.ReversePortForwardsForHostWithDefaults(workspace, devssh.DefaultReversePortForwards())
+
+	return runDevSSH(ctx, opts)
+}
+
+func runDevpodStdioProxy(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("_devpod-stdio-proxy", stderr)
+	user := fs.String("user", "", "DevPod workspace user")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("_devpod-stdio-proxy requires exactly one workspace")
+	}
+
 	token, err := githubAuthToken(ctx)
 	if err != nil {
 		return fmt.Errorf("forward GitHub token: %w", err)
 	}
-	env = append(env, "GH_TOKEN="+token)
-	devpodArgs = append(devpodArgs, "--send-env", "GH_TOKEN")
 
+	env := []string{"GH_TOKEN=" + token}
+	devpodArgs := []string{
+		"ssh",
+		"--stdio",
+		"--start-services=false",
+		"--send-env", "GH_TOKEN",
+	}
+	if *user != "" {
+		devpodArgs = append(devpodArgs, "--user", *user)
+	}
 	devpodArgs = append(devpodArgs, fs.Arg(0))
-	devpodArgs = append(devpodArgs, fs.Args()[1:]...)
 	return runDevpodInteractiveWithEnv(ctx, os.Stdin, stdout, stderr, env, devpodArgs...)
+}
+
+func stripLeadingDashDash(args []string) []string {
+	args = append([]string(nil), args...)
+	if len(args) > 0 && args[0] == "--" {
+		return args[1:]
+	}
+	return args
+}
+
+func devpodProxyCommand(executable, workspace, user string) string {
+	parts := []string{
+		executable,
+		"_devpod-stdio-proxy",
+	}
+	if user != "" {
+		parts = append(parts, "--user", user)
+	}
+	parts = append(parts, workspace)
+
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		quoted = append(quoted, proxyCommandQuote(part))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func proxyCommandQuote(s string) string {
+	return shellQuote(strings.ReplaceAll(s, "%", "%%"))
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	allSafe := true
+	for _, r := range s {
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_@%+=:,./-", r)) {
+			allSafe = false
+			break
+		}
+	}
+	if allSafe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func devpodHostAlias(workspace string) string {
+	sum := sha256.Sum256([]byte(workspace))
+	hash := hex.EncodeToString(sum[:4])
+	var b strings.Builder
+	for _, r := range workspace {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	name := strings.Trim(b.String(), "-.")
+	if name == "" {
+		name = "workspace"
+	}
+	return "redev-devpod-" + name + "-" + hash
+}
+
+func devpodWorkspaceUser(workspace string) (string, error) {
+	return sshconfig.GetStrict(workspace+".devpod", "User")
 }
 
 func runCompletion(args []string, stdout io.Writer) error {
@@ -186,7 +323,7 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 }
 
 func printUsage(w io.Writer) {
-	commands := []string{"completion fish", "doctor", "list", "open <workspace>", "ssh <workspace> [-- ssh-args...]"}
+	commands := []string{"completion fish", "doctor", "list", "open <workspace>", "ssh [flags] <workspace> [-- ssh-args...]"}
 	sort.Strings(commands)
 
 	fmt.Fprintln(w, "redev is a devpod-oriented remote development helper.")
